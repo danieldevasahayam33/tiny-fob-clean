@@ -11,6 +11,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get('/status', (req, res) => {
+  res.json({ ok: true, ts: new Date().toISOString() });
+});
+
 app.get("/", (_, res) => res.send("Tiny FOB container says hello."));
 app.get("/go/:slug", (req, res) => {
   // simple redirect demo; add logging later if you want
