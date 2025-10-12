@@ -2,6 +2,8 @@
 const express = require("express");
 const app = express();
 
+const rateLimit = require('express-rate-limit');
+
 const ADMIN = process.env.FOB_ADMIN_PASS || "testpass";
 
 app.get('/status', (req, res) => {
@@ -20,6 +22,14 @@ app.get('/status', (req, res) => {
 });
 
 app.get("/", (_, res) => res.send("Tiny FOB container says hello."));
+
+const goLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 120,            // 120 requests per IP per minute
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use('/go', goLimiter);
 app.get("/go/:slug", (req, res) => {
   // simple redirect demo; add logging later if you want
   res.redirect(302, req.query.dest || "https://example.com");
