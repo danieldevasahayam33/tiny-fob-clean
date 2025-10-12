@@ -4,6 +4,10 @@ const app = express();
 
 const ADMIN = process.env.FOB_ADMIN_PASS || "testpass";
 
+app.get('/status', (req, res) => {
+  res.json({ ok: true, ts: new Date().toISOString() });
+});
+
 app.use((req, res, next) => {
   if (app.locals.killed && !req.path.startsWith("/admin")) {
     return res.status(503).send("Service unavailable");
