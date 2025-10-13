@@ -113,6 +113,33 @@ app.get("/go/:slug", async (req, res) => {
 // ✅ SAFE ZONE — Paste new routes BELOW this line
 // ─────────────────────────────────────────────
 
+// Daily CSV for a given UTC date (YYYY-MM-DD)
+app.get("/admin/export/day", async (req, res) => {
+  const pass = req.query.pass || req.get("x-admin-pass");
+  if (pass !== (process.env.FOB_ADMIN_PASS || "testpass"))
+    return res.status(403).send("forbidden");
+
+  // default = today UTC; allow override via ?day=YYYY-MM-DD
+  const day = (req.query.day || new Date().toISOString().slice(0,10)).trim();
+
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, ts, ip, ua, slug, dest, qs
+      FROM clicks
+      WHERE ts::date = $1::date
+      ORDER BY id
+    `, [day]);
+
+    const csv = new (require("json2csv").Parser)().parse(rows);
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename=clicks_${day}.csv`);
+    res.send(csv);
+  } catch (e) {
+    res.status(500).send("export error: " + e.message);
+  }
+});
+
+
 // CSV export (last 1000)
 app.get("/admin/export", async (req, res) => {
   if ((req.query.pass || req.get("x-admin-pass")) !== ADMIN)
