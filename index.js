@@ -1,4 +1,4 @@
-// index.js — Tiny FOB (CJS, Render-friendly, with Postgres logging)
+// index.js — Tiny FOB (CJS) with Postgres logging + debug routes
 
 const express   = require("express");
 const rateLimit = require("express-rate-limit");
@@ -14,7 +14,7 @@ let pool = null;
 if (DATABASE_URL) {
   pool = new Pool({
     connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false } // needed for Render PG
   });
 
   (async () => {
@@ -86,6 +86,7 @@ app.get("/go/:slug", async (req, res) => {
       );
     } catch (e) {
       console.error("INSERT fail:", e);
+      // still redirect even if logging fails
     }
   }
 
@@ -108,6 +109,24 @@ app.post("/admin/unkill", express.urlencoded({ extended: true }), (req, res) => 
   if (passFrom(req) !== ADMIN) return res.status(403).send("forbidden");
   app.locals.killed = false;
   res.send("un-killed");
+});
+
+// ---------- Debug routes ----------
+app.get("/admin/_envcheck", (_req, res) => {
+  res.json({
+    hasDB: !!process.env.DATABASE_URL,
+    hasAdminPass: !!process.env.FOB_ADMIN_PASS
+  });
+});
+
+app.get("/admin/_dbcheck", async (_req, res) => {
+  if (!pool) return res.status(500).json({ ok: false, error: "no pool (DATABASE_URL missing?)" });
+  try {
+    const r = await pool.query("select now() as now");
+    res.json({ ok: true, now: r.rows[0].now });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ---------- Start ----------
