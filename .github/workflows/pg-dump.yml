@@ -1,0 +1,25 @@
+name: Nightly PG Dump
+on:
+  schedule:
+    - cron: "15 0 * * *"   # 00:15 UTC nightly
+  workflow_dispatch:
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump database to gzip
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          DAY="$(date -u +%F)"
+          FILE="pgdump_${DAY}.sql.gz"
+          docker run --rm -v "$PWD:/out" postgres:17 bash -lc '
+            pg_dump --no-owner --no-privileges "$DATABASE_URL" | gzip -9 > /out/'"$FILE"
+          ls -lh "$FILE"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgdump
+          path: pgdump_*.sql.gz
+          if-no-files-found: error
