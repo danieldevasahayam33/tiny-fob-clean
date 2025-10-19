@@ -10,7 +10,23 @@ const { URL } = require("url");
 const helmet = require("helmet");
 const cors = require("cors");
 
+const client = require("prom-client");
+
 const app = express();
+
+// ─────────────────────────────────────────────
+// METRICS SETUP
+// ─────────────────────────────────────────────
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+
+// Custom counter for clicks
+const clicksTotal = new client.Counter({
+  name: "clicks_total",
+  help: "Total number of redirects recorded",
+  labelNames: ["slug"],
+});
+register.registerMetric(clicksTotal);
 
 // ─────────────────────────────────────────────
 // SECURITY MIDDLEWARE
@@ -44,16 +60,32 @@ function adminOK(req) {
 }
 
 // ─────────────────────────────────────────────
-// DATABASE INITIALIZATION
+// DATABASE INITIALIZATION (hardened)
 // ─────────────────────────────────────────────
 let pool = null;
+
 if (DATABASE_URL) {
   pool = new Pool({
     connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false },
+    // Mild pool sizing is fine; Render dynos are small
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  });
+
+  // Pool-level error guard so a broken idle client doesn’t crash the app
+  pool.on("error", (err) => {
+    console.error("🧯 pg pool error:", err.message);
   });
 
   (async () => {
+    // Per-connection session settings: timeouts + tag
+    await pool.query(`SET application_name = 'tiny-fob';
+                      SET statement_timeout = '15s';
+                      SET idle_in_transaction_session_timeout = '10s';`);
+
+    // Ensure table exists
     await pool.query(`
       CREATE TABLE IF NOT EXISTS clicks (
         id   SERIAL PRIMARY KEY,
@@ -64,11 +96,30 @@ if (DATABASE_URL) {
         ua   TEXT
       )
     `);
-    console.log("✅ Postgres connected, clicks table ready");
+
+    // Optional but safe: ensure helpful indexes
+    await pool.query(`CREATE INDEX IF NOT EXISTS clicks_ts_idx   ON clicks(ts);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS clicks_slug_idx ON clicks(slug);`);
+
+    console.log("✅ Postgres connected, clicks table/indexes ready");
   })().catch((e) => console.error("DB init error:", e));
 } else {
   console.warn("⚠️ No DATABASE_URL found. Logging disabled.");
 }
+
+// Graceful shutdown for Render restarts / deploys
+const shutdown = async (signal) => {
+  try {
+    console.log(`🛑 ${signal} received, closing pg pool...`);
+    if (pool) await pool.end();
+  } catch (e) {
+    console.error("pg pool shutdown error:", e);
+  } finally {
+    process.exit(0);
+  }
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT",  () => shutdown("SIGINT"));
 
 // ─────────────────────────────────────────────
 // HEALTH CHECK ENDPOINT
