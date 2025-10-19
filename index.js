@@ -14,6 +14,20 @@ const client = require("prom-client");
 const app = express();
 
 // ─────────────────────────────────────────────
+// METRICS SETUP
+// ─────────────────────────────────────────────
+const register = new client.Registry();
+client.collectDefaultMetrics({ register }); // node/process metrics
+
+// Custom counter for redirects
+const clicksTotal = new client.Counter({
+  name: "clicks_total",
+  help: "Total number of redirects recorded",
+  labelNames: ["slug"],
+});
+register.registerMetric(clicksTotal);
+
+// ─────────────────────────────────────────────
 // SECURITY MIDDLEWARE
 // ─────────────────────────────────────────────
 app.disable("x-powered-by");
@@ -293,6 +307,15 @@ app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
 });
+
+// ─────────────────────────────────────────────
+// METRICS ENDPOINT (Prometheus compatible)
+// ─────────────────────────────────────────────
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
+});
+
 
 // ─────────────────────────────────────────────
 // ❌ DO NOT PASTE BELOW THIS LINE
