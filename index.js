@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────
-// index.js — Tiny FOB (Full Hardened Version)
+// index.js — Tiny FOB (Hardened + Metrics)
 // ─────────────────────────────────────────────
 
 const express = require("express");
@@ -9,24 +9,9 @@ const { Parser } = require("json2csv");
 const { URL } = require("url");
 const helmet = require("helmet");
 const cors = require("cors");
-
 const client = require("prom-client");
 
 const app = express();
-
-// ─────────────────────────────────────────────
-// METRICS SETUP
-// ─────────────────────────────────────────────
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
-
-// Custom counter for clicks
-const clicksTotal = new client.Counter({
-  name: "clicks_total",
-  help: "Total number of redirects recorded",
-  labelNames: ["slug"],
-});
-register.registerMetric(clicksTotal);
 
 // ─────────────────────────────────────────────
 // SECURITY MIDDLEWARE
@@ -35,11 +20,25 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1); // respect Render/CF proxy IPs
 app.use(
   helmet({
-    contentSecurityPolicy: false, // not enforcing CSP for this API-style service
+    contentSecurityPolicy: false, // API-style service; CSP optional
     crossOriginResourcePolicy: { policy: "same-site" },
   })
 );
-app.use(cors({ origin: false })); // no cross-origin browser calls by default
+app.use(cors({ origin: false })); // disallow cross-origin browser calls by default
+
+// ─────────────────────────────────────────────
+// METRICS SETUP (Prometheus)
+// ─────────────────────────────────────────────
+const register = new client.Registry();
+client.collectDefaultMetrics({ register }); // node/process metrics
+
+// Custom counter for redirects
+const clicksTotal = new client.Counter({
+  name: "clicks_total",
+  help: "Total number of redirects recorded",
+  labelNames: ["slug"],
+});
+register.registerMetric(clicksTotal);
 
 // ─────────────────────────────────────────────
 // CONFIGURATION
@@ -68,7 +67,6 @@ if (DATABASE_URL) {
   pool = new Pool({
     connectionString: DATABASE_URL,
     ssl: { rejectUnauthorized: false },
-    // Mild pool sizing is fine; Render dynos are small
     max: 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
@@ -81,9 +79,11 @@ if (DATABASE_URL) {
 
   (async () => {
     // Per-connection session settings: timeouts + tag
-    await pool.query(`SET application_name = 'tiny-fob';
-                      SET statement_timeout = '15s';
-                      SET idle_in_transaction_session_timeout = '10s';`);
+    await pool.query(`
+      SET application_name = 'tiny-fob';
+      SET statement_timeout = '15s';
+      SET idle_in_transaction_session_timeout = '10s';
+    `);
 
     // Ensure table exists
     await pool.query(`
@@ -97,7 +97,7 @@ if (DATABASE_URL) {
       )
     `);
 
-    // Optional but safe: ensure helpful indexes
+    // Helpful indexes (idempotent)
     await pool.query(`CREATE INDEX IF NOT EXISTS clicks_ts_idx   ON clicks(ts);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS clicks_slug_idx ON clicks(slug);`);
 
@@ -119,10 +119,10 @@ const shutdown = async (signal) => {
   }
 };
 process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT",  () => shutdown("SIGINT"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // ─────────────────────────────────────────────
-// HEALTH CHECK ENDPOINT
+// HEALTH CHECK
 // ─────────────────────────────────────────────
 app.get("/status", async (_req, res) => {
   try {
@@ -160,9 +160,7 @@ app.post("/admin/unkill", express.urlencoded({ extended: true }), (req, res) => 
 // ─────────────────────────────────────────────
 // ROOT
 // ─────────────────────────────────────────────
-app.get("/", (_req, res) =>
-  res.send("👋 Tiny FOB is online and logging clicks.")
-);
+app.get("/", (_req, res) => res.send("👋 Tiny FOB is online and logging clicks."));
 
 // ─────────────────────────────────────────────
 // RATE LIMIT + SAFE REDIRECTOR
@@ -207,18 +205,20 @@ app.get("/go/:slug", async (req, res) => {
     console.error("⚠️ insert fail:", e.message);
   }
 
+  // metric
+  clicksTotal.inc({ slug }, 1);
+
   res.redirect(302, dest);
 });
 
 // ─────────────────────────────────────────────
-// ✅ SAFE ZONE — Paste new routes BELOW this line
+// ✅ SAFE ZONE — Admin/ops routes
 // ─────────────────────────────────────────────
 
 // Daily CSV for a given UTC date (YYYY-MM-DD)
 app.get("/admin/export/day", async (req, res) => {
   if (!adminOK(req)) return res.status(403).send("forbidden");
 
-  // default = today UTC; allow override via ?day=YYYY-MM-DD
   const day = (req.query.day || new Date().toISOString().slice(0, 10)).trim();
 
   try {
@@ -284,6 +284,14 @@ app.get("/admin/stats", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ─────────────────────────────────────────────
+// METRICS ENDPOINT (Prometheus compatible)
+// ─────────────────────────────────────────────
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
 });
 
 // ─────────────────────────────────────────────
