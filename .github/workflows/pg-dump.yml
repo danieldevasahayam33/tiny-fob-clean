@@ -3,10 +3,23 @@ on:
   schedule:
     - cron: "15 0 * * *"   # 00:15 UTC nightly
   workflow_dispatch:
+
 jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
+      - name: Install Postgres client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client
+
+      - name: Sanity check connection
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          psql "$DATABASE_URL" -Atc "select now() as utc_now"
+          psql "$DATABASE_URL" -Atc "select count(*) as clicks from clicks" || true
+
       - name: Dump database to gzip
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -14,12 +27,15 @@ jobs:
           set -euo pipefail
           DAY="$(date -u +%F)"
           FILE="pgdump_${DAY}.sql.gz"
-          docker run --rm -v "$PWD:/out" postgres:17 bash -lc '
-            pg_dump --no-owner --no-privileges "$DATABASE_URL" | gzip -9 > /out/'"$FILE"
+          # -Z 9 = compress in pg_dump itself
+          pg_dump --no-owner --no-privileges -Z 9 --file="$FILE" "$DATABASE_URL"
           ls -lh "$FILE"
-      - name: Upload artifact
+          gzip -t "$FILE"
+
+      - name: Upload artifact (30-day retention)
         uses: actions/upload-artifact@v4
         with:
           name: pgdump
           path: pgdump_*.sql.gz
+          retention-days: 30
           if-no-files-found: error
